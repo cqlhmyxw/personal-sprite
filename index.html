@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>个人精灵</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <!-- 蝴蝶装饰背景 -->
+  <div class="bg-butterflies" aria-hidden="true">
+    <div class="bf bf1"></div>
+    <div class="bf bf2"></div>
+    <div class="bf bf3"></div>
+  </div>
+
+  <div class="app-shell">
+    <!-- 顶部品牌栏 -->
+    <header class="brand-bar">
+      <div class="brand-logo">🦋</div>
+      <div class="brand-title">
+        <h1>个人精灵</h1>
+        <span id="ver">v2.0.0</span>
+      </div>
+      <div class="brand-actions">
+        <button id="btn-min" class="icon-btn" title="最小化">—</button>
+        <button id="btn-close" class="icon-btn" title="关闭">✕</button>
+      </div>
+    </header>
+
+    <!-- Tab 导航 -->
+    <nav class="tab-nav">
+      <button class="tab-btn active" data-tab="translate">🗣️ 翻译</button>
+      <button class="tab-btn" data-tab="notes">📝 笔记</button>
+      <button class="tab-btn" data-tab="convert">🔄 转换</button>
+    </nav>
+
+    <!-- ============ Tab 1: 翻译 ============ -->
+    <section id="tab-translate" class="tab-panel active">
+      <div class="card glass">
+        <div class="row">
+          <label>源语言</label>
+          <select id="src-lang">
+            <option value="auto">自动检测</option>
+            <option value="zh-CN">中文</option>
+            <option value="en">英语</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+            <option value="fr">法语</option>
+            <option value="de">德语</option>
+            <option value="es">西班牙语</option>
+            <option value="ru">俄语</option>
+          </select>
+          <span class="arrow">→</span>
+          <label>目标语言</label>
+          <select id="dst-lang">
+            <option value="zh-CN" selected>中文</option>
+            <option value="en">英语</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+            <option value="fr">法语</option>
+            <option value="de">德语</option>
+            <option value="es">西班牙语</option>
+            <option value="ru">俄语</option>
+          </select>
+        </div>
+        <textarea id="trans-in" placeholder="输入要翻译的文字…" rows="6"></textarea>
+        <div class="row between">
+          <button id="btn-translate" class="btn primary">✨ 翻译</button>
+          <div class="btn-group">
+            <button id="btn-copy" class="btn ghost" title="复制译文">📋 复制</button>
+            <button id="btn-speak" class="btn ghost" title="朗读译文">🔊 朗读</button>
+          </div>
+        </div>
+        <div class="result-wrap">
+          <div class="result-label">译文</div>
+          <textarea id="trans-out" placeholder="译文会显示在这里…" rows="6" readonly></textarea>
+        </div>
+        <div id="trans-status" class="status-bar">就绪</div>
+      </div>
+    </section>
+
+    <!-- ============ Tab 2: 笔记 ============ -->
+    <section id="tab-notes" class="tab-panel">
+      <div class="notes-layout">
+        <!-- 笔记本列表 -->
+        <div class="notes-sidebar glass">
+          <div class="sidebar-head">
+            <span>📚 笔记本</span>
+            <button id="btn-add-nb" class="mini-btn" title="新建笔记本">＋</button>
+          </div>
+          <ul id="nb-list" class="nb-list"></ul>
+          <div class="sidebar-head" style="margin-top:12px">
+            <span>📄 页面</span>
+            <button id="btn-add-page" class="mini-btn" title="新建页面">＋</button>
+          </div>
+          <ul id="page-list" class="nb-list"></ul>
+        </div>
+        <!-- 笔记编辑区 -->
+        <div class="notes-editor glass">
+          <div class="editor-toolbar">
+            <button class="tool-btn" data-cmd="bold"><b>B</b></button>
+            <button class="tool-btn" data-cmd="italic"><i>I</i></button>
+            <button class="tool-btn" data-cmd="h1">H1</button>
+            <button class="tool-btn" data-cmd="h2">H2</button>
+            <button class="tool-btn" data-cmd="ul">• 列表</button>
+            <span class="spacer"></span>
+            <button id="btn-note-save" class="btn small primary">💾 保存</button>
+            <button id="btn-note-export" class="btn small ghost">📤 导出</button>
+            <button id="btn-note-voice" class="btn small ghost" title="语音转文字">🎤</button>
+            <button id="btn-note-attach" class="btn small ghost" title="添加附件">📎</button>
+          </div>
+          <div id="note-title" class="note-title" contenteditable="true" data-placeholder="笔记标题…"></div>
+          <div id="note-body" class="note-body" contenteditable="true" data-placeholder="开始记录…（支持文字、图片、文件）"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Tab 3: 转换 ============ -->
+    <section id="tab-convert" class="tab-panel">
+      <div class="card glass">
+        <h2 class="section-title">🔄 全能文件转换</h2>
+        <div class="convert-grid">
+          <div class="convert-type">
+            <div class="type-icon">📄</div>
+            <div class="type-name">文档互转</div>
+            <div class="type-desc">Word · PDF · Markdown · HTML · EPUB</div>
+          </div>
+          <div class="convert-type">
+            <div class="type-icon">📊</div>
+            <div class="type-name">Office 互转</div>
+            <div class="type-desc">Word · Excel · PPT · PDF</div>
+          </div>
+          <div class="convert-type">
+            <div class="type-icon">🖼️</div>
+            <div class="type-name">图片转换</div>
+            <div class="type-desc">PNG · JPG · WebP · BMP · GIF</div>
+          </div>
+          <div class="convert-type">
+            <div class="type-icon">🎬</div>
+            <div class="type-name">音视频转换</div>
+            <div class="type-desc">MP4 · MKV · MP3 · WAV · FLAC</div>
+          </div>
+        </div>
+        <div class="convert-picker">
+          <button id="btn-pick-file" class="btn primary">📂 选择文件</button>
+          <span id="convert-file-name" class="muted">未选择文件</span>
+        </div>
+        <div class="row">
+          <label>转换为</label>
+          <select id="convert-target">
+            <option value="">选择目标格式…</option>
+          </select>
+          <button id="btn-convert" class="btn primary" disabled>⚙️ 转换</button>
+        </div>
+        <div id="convert-status" class="status-bar">就绪</div>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

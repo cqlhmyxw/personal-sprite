@@ -1,0 +1,43 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [master, main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      TAPI_KEY: ${{ secrets.TAPI_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust deps
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri"
+
+      - name: Install frontend deps
+        run: npm install
+
+      - name: Build Tauri app (Windows)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAPI_KEY: ${{ secrets.TAPI_KEY }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "个人精灵 v__VERSION__"
+          releaseBody: "个人精灵 Windows 版 — 翻译 / 笔记 / 文件转换"
+          releaseDraft: true
+          prerelease: false

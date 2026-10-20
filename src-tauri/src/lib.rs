@@ -488,10 +488,13 @@ fn clipboard_monitor(app: AppHandle) {
     let mut last: Option<String> = None;
     loop {
         std::thread::sleep(Duration::from_millis(900));
-        // 读剪贴板（tauri 插件）
+        // 读剪贴板：用 arboard 专用实例（Windows/Linux 都可靠，不依赖主线程）
         let current = {
-            use tauri_plugin_clipboard_manager::ClipboardExt;
-            app.clipboard().read_text().ok()
+            let mut cb = match arboard::Clipboard::new() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            cb.get_text().ok()
         };
         let Some(text) = current else { continue };
         let text = text.trim().to_string();

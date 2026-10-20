@@ -2,7 +2,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager};
 
 // ---------- 配置 ----------
 const APP_DIR_NAME: &str = "PersonalSprite";
@@ -36,9 +37,16 @@ fn minimize_window(app: AppHandle) {
 
 #[tauri::command]
 fn close_window(app: AppHandle) {
+    // V2.1: 关闭主窗口=隐藏到后台，后台翻译线程继续工作（常驻）
     if let Some(w) = app.get_webview_window("main") {
-        w.close().ok();
+        w.hide().ok();
     }
+}
+
+// 真正退出（悬浮窗上提供退出按钮）
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 // ============ 翻译 ============
@@ -348,12 +356,15 @@ fn convert_file(app: AppHandle, file_path: String, target_ext: String) -> Result
     let out_path = out_dir.join(format!("{}.{}", base, target_ext));
     let out_str = out_path.to_string_lossy().into_owned();
 
-    // 文档类：优先 pandoc；图片：Pillow 脚本；音视频：ffmpeg
+    // 文档类：PDF 走云端 API；txt/md/html 本地直转；其他报错
     let doc_exts = ["pdf", "docx", "doc", "txt", "md", "html", "epub"];
     let img_exts = ["png", "jpg", "jpeg", "webp", "bmp", "gif"];
     let media_exts = ["mp4", "mkv", "mov", "avi", "webm", "mp3", "wav", "flac", "ogg", "aac", "m4a"];
 
-    if doc_exts.contains(&src_ext.as_str()) || doc_exts.contains(&target_ext.as_str()) {
+    if src_ext == "pdf" && target_ext == "docx" {
+        // PDF → Word：走云端转换 API（本地无引擎也不怕）
+        cloud_pdf_to_docx(&file_path, &out_str).map_err(|e| format!("PDF转Word失败: {e}"))?;
+    } else if doc_exts.contains(&src_ext.as_str()) && doc_exts.contains(&target_ext.as_str()) {
         run_pandoc(&file_path, &out_str).map_err(|e| format!("文档转换失败: {e}"))?;
     } else if img_exts.contains(&src_ext.as_str()) && img_exts.contains(&target_ext.as_str()) {
         run_pillow(&file_path, &out_str).map_err(|e| format!("图片转换失败: {e}"))?;
@@ -363,6 +374,34 @@ fn convert_file(app: AppHandle, file_path: String, target_ext: String) -> Result
         return Err("暂不支持该转换".into());
     }
     Ok(out_str)
+}
+
+// PDF → Word：上传到云端 translate-file API，返回 docx 文件
+fn cloud_pdf_to_docx(src: &str, dst: &str) -> Result<(), String> {
+    let content = fs::read(src).map_err(|e| format!("读取文件失败: {e}"))?;
+    let fname = Path::new(src).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file.pdf".into());
+    // 构造 multipart/form-data
+    let boundary = format!("----PS{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let mut body = Vec::new();
+    for (k, v) in [("source", "auto"), ("target", "zh-CN")] {
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").as_bytes());
+    }
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{fname}\"\r\nContent-Type: application/pdf\r\n\r\n").as_bytes());
+    body.extend_from_slice(&content);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let resp = ureq::post("https://translate.fast-api-hub.top/api/translate-file")
+        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+        .send_bytes(&body)
+        .map_err(|e| format!("云端转换失败: {e}"))?;
+    let bytes = resp.into_string().map_err(|e| format!("读取响应失败: {e}"))?;
+    // 响应可能是 docx 二进制或 JSON 错误
+    if bytes.starts_with("PK") || bytes.len() > 1000 {
+        fs::write(dst, &bytes).map_err(|e| format!("保存失败: {e}"))?;
+        Ok(())
+    } else {
+        Err(format!("云端返回异常: {}", bytes.chars().take(200).collect::<String>()))
+    }
 }
 
 fn run_pandoc(src: &str, dst: &str) -> Result<(), String> {
@@ -408,6 +447,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .setup(|app| {
+            // 后台线程：轮询剪贴板，发现新复制文本 → 自动翻译 → 通知 overlay 悬浮窗
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                clipboard_monitor(handle);
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             minimize_window,
             close_window,
@@ -428,7 +475,68 @@ pub fn run() {
             pick_file,
             convert_targets,
             convert_file,
+            show_overlay,
+            hide_overlay,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ---------- V2.1 沉浸式翻译：后台剪贴板监听 ----------
+fn clipboard_monitor(app: AppHandle) {
+    let mut last: Option<String> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(900));
+        // 读剪贴板（tauri 插件）
+        let current = {
+            use tauri_plugin_clipboard_manager::ClipboardExt;
+            app.clipboard().read_text().ok()
+        };
+        let Some(text) = current else { continue };
+        let text = text.trim().to_string();
+        if text.is_empty() || text.len() < 2 || text.len() > 4000 {
+            continue;
+        }
+        // 只处理非纯中文的外文（目标语言是中文）
+        let has_foreign = text.chars().any(|c| c.is_ascii_alphabetic());
+        if !has_foreign { continue; }
+        // 内容没变 → 跳过（避免重复翻译）
+        if let Some(l) = &last {
+            if l == &text { continue; }
+        }
+        last = Some(text.clone());
+
+        // 调用翻译
+        match translate(text.clone(), "zh".into(), "auto".into()) {
+            Ok(translated) => {
+                if translated.is_empty() || translated == text { continue; }
+                // 通知 overlay 窗口显示
+                let _ = app.emit("translate-result", serde_json::json!({
+                    "text": text,
+                    "translated": translated,
+                }));
+                // 显示悬浮窗（不抢焦点，避免打断用户打字）
+                if let Some(w) = app.get_webview_window("overlay") {
+                    let _ = w.show();
+                }
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+// ---------- V2.2 屏幕框选 OCR 翻译 ----------
+#[tauri::command]
+fn show_overlay(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.show();
+    }
+}
+
+#[tauri::command]
+fn hide_overlay(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("overlay") {
+        let _ = w.hide();
+    }
 }

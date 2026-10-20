@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "个人精灵",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "identifier": "com.xiaokong.personal-sprite",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,13 +13,28 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "个人精灵 v2.0.0",
+        "title": "个人精灵 v2.2.0",
         "width": 860,
         "height": 680,
         "minWidth": 720,
         "minHeight": 560,
         "resizable": true,
         "center": true
+      },
+      {
+        "label": "overlay",
+        "title": "精灵译窗",
+        "url": "overlay.html",
+        "width": 400,
+        "height": 220,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false,
+        "focus": false
       }
     ],
     "security": {

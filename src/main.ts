@@ -32,53 +32,8 @@ $("#btn-close").addEventListener("click", () => invoke("close_window"));
 
 // ============ 翻译 ============
 
-// V2.1 沉浸式翻译：剪贴板监听自动翻译 + 悬浮译文窗
-let lastClip = "";
-const FLOAT_EL = document.getElementById("float-trans")!;
-const FLOAT_TEXT = document.getElementById("float-text")!;
-
-// 悬浮译文窗关闭按钮
-document.getElementById("float-close")?.addEventListener("click", () => {
-  FLOAT_EL.classList.remove("show");
-});
-
-// 拖动悬浮窗
-let drag = false, dragX = 0, dragY = 0;
-FLOAT_EL.addEventListener("mousedown", (e) => {
-  if ((e.target as HTMLElement).id === "float-close") return;
-  drag = true; dragX = e.clientX; dragY = e.clientY;
-});
-window.addEventListener("mousemove", (e) => {
-  if (!drag) return;
-  const r = FLOAT_EL.getBoundingClientRect();
-  FLOAT_EL.style.left = r.left + (e.clientX - dragX) + "px";
-  FLOAT_EL.style.top = r.top + (e.clientY - dragY) + "px";
-  dragX = e.clientX; dragY = e.clientY;
-});
-window.addEventListener("mouseup", () => drag = false);
-
-function showFloat(text: string) {
-  FLOAT_TEXT.textContent = text;
-  FLOAT_EL.classList.add("show");
-}
-
-// 剪贴板轮询：每 800ms 检查一次，发现新复制内容自动翻译
-setInterval(async () => {
-  try {
-    const clip = await invoke<string>("clipboard_poll", { lastText: lastClip });
-    if (!clip) return;
-    lastClip = clip;
-    const trimmed = clip.trim();
-    if (trimmed.length < 2) return; // 太短不翻
-    const dst = ($("#dst-lang") as HTMLSelectElement).value || "zh";
-    const result = await invoke<string>("translate", { text: trimmed, target: dst, source: "auto" });
-    if (result && result !== trimmed) {
-      showFloat(`📋 ${trimmed.slice(0, 60)}${trimmed.length > 60 ? "…" : ""}\n\n${result}`);
-    }
-  } catch {
-    /* 剪贴板权限/暂时失败静默跳过 */
-  }
-}, 800);
+// V2.1 沉浸式翻译：由 Rust 后台线程监听剪贴板，自动翻译并显示在系统级悬浮窗(overlay)
+// 本页只保留手动翻译按钮
 
 $("#btn-translate").addEventListener("click", async () => {
   const text = ($("#trans-in") as HTMLTextAreaElement).value.trim();

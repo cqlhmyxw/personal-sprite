@@ -453,3 +453,44 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(167,139
 .switch input:checked + .slider::before {
   transform: translateX(20px);
 }
+
+/* V2.4 区域锁定翻译 UI */
+.ocr-auto-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.mini-btn {
+  background: linear-gradient(135deg, #7c3aed, #a855f7);
+  border: none;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: 0.2s;
+  white-space: nowrap;
+}
+.mini-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.mini-btn.ghost {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: rgba(255,255,255,0.7);
+}
+.mini-btn.ghost:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.ocr-region-status {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.06);
+  padding: 2px 8px;
+  border-radius: 10px;
+  display: inline-block;
+  margin-top: 4px;
+  font-family: Consolas, monospace;
+}
+.ocr-region-status.on {
+  color: #a78bfa;
+  background: rgba(124, 58, 237, 0.15);
+}

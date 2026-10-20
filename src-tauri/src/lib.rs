@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -441,15 +442,77 @@ fn find_bin(names: &[&str]) -> Option<String> {
     None
 }
 
-// ============ V2.3 自动 OCR 原位翻译 ============
-// 每 1.8s 整屏截屏 → 与上帧 diff → 找稳定变化文字区 → 云端 OCR+翻译 → overlay 原位覆盖
+// ============ V2.4 区域锁定翻译 ============
+// 用户框选屏幕区域 → 只盯该区域：滚动中不翻（FrameGate 帧门控），
+// 停稳后连续文本稳定才交付（TemporalTextTracker 稳定器），译文显示在区域下方悬浮条
 const OCR_API: &str = "https://ocr.fast-api-hub.top/ocr-lines-b64";
 static OCR_ENABLED: AtomicBool = AtomicBool::new(false);
+static OCR_REGION: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
 
 #[tauri::command]
 fn set_ocr_enabled(enabled: bool) {
     OCR_ENABLED.store(enabled, Ordering::Relaxed);
     log_ocr(&format!("屏幕自动翻译: {}", if enabled { "开" } else { "关" }));
+}
+
+#[tauri::command]
+fn set_ocr_region(x: i32, y: i32, w: i32, h: i32) {
+    if w >= 50 && h >= 20 {
+        *OCR_REGION.lock().unwrap() = Some((x, y, w, h));
+        // 持久化，重启后自动恢复
+        let _ = fs::write(
+            "ocr_region.json",
+            serde_json::json!({"x": x, "y": y, "w": w, "h": h}).to_string(),
+        );
+        log_ocr(&format!("翻译区域: ({x},{y}) {w}x{h}"));
+    }
+}
+
+#[tauri::command]
+fn get_ocr_region() -> Vec<i32> {
+    match *OCR_REGION.lock().unwrap() {
+        Some((x, y, w, h)) => vec![x, y, w, h],
+        None => vec![],
+    }
+}
+
+#[tauri::command]
+fn clear_ocr_region() {
+    *OCR_REGION.lock().unwrap() = None;
+    let _ = fs::remove_file("ocr_region.json");
+    log_ocr("翻译区域: 已清除");
+}
+
+// 打开全屏区域选择器
+#[tauri::command]
+fn open_region_picker(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("region-picker") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+// 关闭区域选择器（框选完成或取消）
+#[tauri::command]
+fn close_region_picker(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("region-picker") {
+        let _ = w.hide();
+    }
+}
+
+fn load_ocr_region() {
+    // 启动时从文件恢复上次框选的区域
+    if let Ok(s) = fs::read_to_string("ocr_region.json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            let x = v["x"].as_i64().unwrap_or(0) as i32;
+            let y = v["y"].as_i64().unwrap_or(0) as i32;
+            let w = v["w"].as_i64().unwrap_or(0) as i32;
+            let h = v["h"].as_i64().unwrap_or(0) as i32;
+            if w >= 50 && h >= 20 {
+                *OCR_REGION.lock().unwrap() = Some((x, y, w, h));
+            }
+        }
+    }
 }
 
 fn ocr_enabled() -> bool {
@@ -472,6 +535,13 @@ fn chrono_local_now() -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("unix:{secs}")
+}
+
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn capture_screen() -> Result<(i32, i32, image::RgbaImage), String> {
@@ -509,84 +579,257 @@ fn capture_screen() -> Result<(i32, i32, image::RgbaImage), String> {
     }
 }
 
-// 帧间 diff：返回变化区域列表
-fn diff_regions(prev: &image::RgbaImage, cur: &image::RgbaImage) -> Vec<(i32, i32, i32, i32)> {
-    let (w, h) = (cur.width(), cur.height());
-    if prev.width() != w || prev.height() != h {
-        return vec![(0, 0, w as i32, h as i32)];
+// 区域截屏：PowerShell 只截框选区域（比整屏快，减少传输）
+fn capture_region_area(x: i32, y: i32, w: i32, h: i32) -> Result<image::RgbaImage, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let ps = format!(
+            "Add-Type -AssemblyName System.Drawing; \
+             $bm = New-Object System.Drawing.Bitmap({w},{h}); \
+             $g = [System.Drawing.Graphics]::FromImage($bm); \
+             $g.CopyFromScreen({x},{y},0,0,(New-Object System.Drawing.Size({w},{h}))); \
+             $ms = New-Object System.IO.MemoryStream; \
+             $bm.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); \
+             [Convert]::ToBase64String($ms.ToArray())"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .map_err(|e| format!("区域截屏失败: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let b64 = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let bytes = base64_decode(&b64)?;
+        image::load_from_memory(&bytes)
+            .map_err(|e| format!("PNG解码失败: {e}"))
+            .map(|img| img.to_rgba8())
     }
-    // 降采样到 1/4 检测变化
-    let (sw, sh) = (w / 4, h / 4);
-    let (swi, shi) = (sw as i32, sh as i32);
-    let mut changed = vec![false; (sw * sh) as usize];
-    for y in 0..sh {
-        for x in 0..sw {
-            let p = prev.get_pixel(x * 4, y * 4);
-            let c = cur.get_pixel(x * 4, y * 4);
-            if p[0] != c[0] || p[1] != c[1] || p[2] != c[2] {
-                let dr = (p[0] as i32 - c[0] as i32).abs();
-                let dg = (p[1] as i32 - c[1] as i32).abs();
-                let db = (p[2] as i32 - c[2] as i32).abs();
-                if dr + dg + db > 45 {
-                    changed[(y * sw + x) as usize] = true;
-                }
-            }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("非 Windows 平台".into())
+    }
+}
+
+// ---- 缩略图：保持宽高比缩到 ≤256x128（DeskTranslate FrameGate 同款）----
+fn thumbnail_gray(img: &image::RgbaImage) -> image::GrayImage {
+    let gray = image::imageops::grayscale(img);
+    let (w, h) = (gray.width(), gray.height());
+    let scale = (256.0 / w.max(1) as f64).min(128.0 / h.max(1) as f64).min(1.0);
+    let (nw, nh) = (
+        ((w as f64 * scale).max(1.0) as u32).max(1),
+        ((h as f64 * scale).max(1.0) as u32).max(1),
+    );
+    image::imageops::resize(&gray, nw, nh, image::imageops::FilterType::Triangle)
+}
+
+// ---- FrameGate 帧门控（移植 DeskTranslate algorithms.py）----
+// 核心：滚动/移动中绝不触发翻译；画面停稳 settle 秒后才 ready。
+// 缩略图 diff 判断变化：均值差 > 阈值 或 显著像素比例 > 0.8% 或 小文字变化(≥4px)。
+#[derive(Clone, Copy)]
+struct FrameDecision {
+    changed: bool,
+    ready: bool,
+    moving: bool,
+}
+
+struct FrameGate {
+    settle: f64,          // 停稳判定时长
+    threshold: f64,       // 灰度均值差阈值
+    motion_interval: f64, // 移动判定窗口
+    candidate: Option<image::GrayImage>,
+    since: f64,
+    emitted: bool,
+    moving: bool,
+    unstable_since: Option<f64>,
+    last_sample: f64,
+    recent_changes: std::collections::VecDeque<f64>,
+}
+
+impl FrameGate {
+    fn new(settle: f64, threshold: f64, motion_interval: f64) -> Self {
+        Self {
+            settle,
+            threshold,
+            motion_interval,
+            candidate: None,
+            since: f64::NEG_INFINITY,
+            emitted: false,
+            moving: false,
+            unstable_since: None,
+            last_sample: f64::NEG_INFINITY,
+            recent_changes: std::collections::VecDeque::new(),
         }
     }
-    // 找变化行带
-    let mut row_changes = vec![0i32; sh as usize];
-    for y in 0..sh {
-        for x in 0..sw {
-            if changed[(y * sw + x) as usize] {
-                row_changes[y as usize] += 1;
-            }
-        }
-    }
-    let mut regions: Vec<(i32, i32, i32, i32)> = vec![];
-    let mut band_start: Option<i32> = None;
-    for y in 0..shi {
-        if row_changes[y as usize] > 1 {
-            if band_start.is_none() {
-                band_start = Some(y);
-            }
-        } else if let Some(bs) = band_start {
-            let be = y - 1;
-            if be - bs >= 2 {
-                // 该带内所有变化列的范围
-                let mut min_x = swi; let mut max_x = 0i32;
-                for yy in bs..=be {
-                    for xx in 0..swi {
-                        if changed[(yy * swi + xx) as usize] {
-                            min_x = min_x.min(xx);
-                            max_x = max_x.max(xx);
+
+    fn observe(&mut self, img: &image::RgbaImage, now: f64) -> FrameDecision {
+        let sample = thumbnail_gray(img);
+        let (tw, th) = (sample.width(), sample.height());
+        let changed = match &self.candidate {
+            None => true,
+            Some(c) => {
+                if c.width() != tw || c.height() != th {
+                    true
+                } else {
+                    // 逐像素 diff 统计
+                    let mut mean_sum = 0.0f64;
+                    let mut significant = 0u32;
+                    for y in 0..th {
+                        for x in 0..tw {
+                            let d = (c.get_pixel(x, y)[0] as i32 - sample.get_pixel(x, y)[0] as i32)
+                                .unsigned_abs();
+                            mean_sum += d as f64;
+                            if d >= 20 {
+                                significant += 1;
+                            }
                         }
                     }
-                }
-                if max_x - min_x >= 2 {
-                    regions.push((min_x * 4, bs * 4, (max_x - min_x + 1) * 4, (be - bs + 1) * 4));
+                    let total = (tw * th).max(1) as f64;
+                    let mean = mean_sum / total;
+                    let sig_ratio = significant as f64 / total;
+                    // 短行/标点变化可远低于区域 0.8%，保留 ≥4px 的明显对比变化
+                    let small_text = significant >= 4;
+                    mean > self.threshold || sig_ratio > 0.008 || small_text
                 }
             }
-            band_start = None;
-        }
-    }
-    if let Some(bs) = band_start {
-        let be = shi - 1;
-        if be - bs >= 2 {
-            let mut min_x = swi; let mut max_x = 0i32;
-            for yy in bs..=be {
-                for xx in 0..swi {
-                    if changed[(yy * swi + xx) as usize] {
-                        min_x = min_x.min(xx);
-                        max_x = max_x.max(xx);
+        };
+        if changed {
+            if self.motion_interval > 0.0 {
+                self.recent_changes.push_back(now);
+                while let Some(front) = self.recent_changes.front() {
+                    if now - *front > 2.5 {
+                        self.recent_changes.pop_front();
+                    } else {
+                        break;
                     }
                 }
+                // 2.5 秒内 ≥3 次变化 → 判定在滚动/移动
+                if self.recent_changes.len() >= 3 {
+                    self.moving = true;
+                }
             }
-            if max_x - min_x >= 2 {
-                regions.push((min_x * 4, bs * 4, (max_x - min_x + 1) * 4, (be - bs + 1) * 4));
+            if self.unstable_since.is_none() {
+                self.unstable_since = Some(now);
+            }
+            self.candidate = Some(sample);
+            self.since = now;
+            self.emitted = false;
+        }
+        // quiet = 距上次变化 ≥ settle 秒
+        let mut quiet = now - self.since >= self.settle;
+        if self.moving {
+            // 移动中要求更久稳定（防滚动间隙误触发）
+            quiet = quiet && now - self.since >= 1.0_f64.max(self.settle * 2.0);
+        }
+        let mut ready = quiet && (!self.emitted || self.moving);
+        if quiet {
+            self.moving = false;
+            self.unstable_since = None;
+        } else if self.motion_interval > 0.0 {
+            if let Some(us) = self.unstable_since {
+                if now - us >= self.motion_interval {
+                    self.moving = true;
+                    ready = now - self.last_sample >= self.motion_interval;
+                }
             }
         }
+        if ready {
+            self.emitted = true;
+            self.last_sample = now;
+        }
+        FrameDecision {
+            changed,
+            ready,
+            moving: self.moving,
+        }
     }
-    regions
+}
+
+// ---- TemporalTextTracker 文本稳定器（移植 DeskTranslate temporal.py）----
+// 同一文本连续多帧出现且不再增长才交付，防止 OCR 抖动导致同一句反复翻译。
+struct Observation {
+    text: String,
+    at: f64,
+}
+
+struct TemporalTextTracker {
+    settle: f64,
+    history: std::collections::VecDeque<Observation>,
+    candidate: String,
+    accepted: String,
+    repeated: usize,
+    growing: bool,
+}
+
+impl TemporalTextTracker {
+    fn new(settle: f64) -> Self {
+        Self {
+            settle,
+            history: std::collections::VecDeque::new(),
+            candidate: String::new(),
+            accepted: String::new(),
+            repeated: 0,
+            growing: false,
+        }
+    }
+
+    fn observe(&mut self, text: &str, now: f64) -> Option<String> {
+        let t = text.trim().to_string();
+        // 清除 2.5 秒前的历史
+        while let Some(front) = self.history.front() {
+            if now - front.at > 2.5 {
+                self.history.pop_front();
+            } else {
+                break;
+            }
+        }
+        if t.is_empty() {
+            self.history.clear();
+            self.candidate.clear();
+            self.accepted.clear();
+            self.repeated = 0;
+            self.growing = false;
+            return None;
+        }
+        let prev_text = self
+            .history
+            .back()
+            .map(|o| o.text.clone())
+            .unwrap_or_default();
+        // 增长检测：新文本是旧文本前缀且更长 → 渐进式文字（如打字中）
+        let growth = !prev_text.is_empty() && t.starts_with(&prev_text) && t.len() > prev_text.len();
+        if t != self.candidate {
+            self.repeated = 1;
+        } else {
+            self.repeated += 1;
+        }
+        if growth {
+            self.growing = true;
+        } else if !prev_text.is_empty() && t != prev_text && !small_text_change(&t, &prev_text) {
+            self.growing = false;
+        }
+        self.candidate = t.clone();
+        self.history.push_back(Observation { text: t.clone(), at: now });
+        // 交付条件：同一文本连续 ≥3 帧（repeated≥3）且不再增长，且与已交付不同
+        if self.repeated >= 3 && !self.growing && t != self.accepted {
+            self.accepted = t.clone();
+            return Some(t);
+        }
+        None
+    }
+}
+
+fn small_text_change(left: &str, right: &str) -> bool {
+    if !(4..=256).contains(&left.len().max(right.len())) || left.len().abs_diff(right.len()) > 2 {
+        return false;
+    }
+    let changes = left
+        .chars()
+        .zip(right.chars())
+        .filter(|(a, b)| a != b)
+        .count()
+        + left.len().abs_diff(right.len());
+    changes <= left.len().min(right.len()).max(2) / 6 + 1
 }
 
 // 区域 PNG → base64
@@ -618,81 +861,85 @@ struct OcrLine {
     h: i32,
 }
 
-// 自动 OCR 翻译主循环
+// 自动 OCR 区域锁定翻译主循环（移植 DeskTranslate 机制）
 fn ocr_translate_loop(app: AppHandle) {
-    let mut prev: Option<image::RgbaImage> = None;
-    // 区域去重（同一文本不重复翻译）
-    let mut last_texts: Vec<String> = vec![];
+    // 帧门控：0.3s 停稳判定，1.2 灰度差阈值，1.5s 移动判定窗口
+    let mut gate = FrameGate::new(0.3, 1.2, 1.5);
+    // 文本稳定器：同一文本连续 ≥3 帧才交付
+    let mut stabilizer = TemporalTextTracker::new(0.25);
+    let mut last_delivered = String::new();
     loop {
-        std::thread::sleep(Duration::from_millis(1800));
+        std::thread::sleep(Duration::from_millis(300));
         // 开关关闭时不截屏（省资源）
         if !ocr_enabled() {
-            prev = None;
+            gate = FrameGate::new(0.3, 1.2, 1.5);
+            stabilizer = TemporalTextTracker::new(0.25);
+            last_delivered.clear();
             continue;
         }
-        let Ok((_w, _h, cur)) = capture_screen() else { continue };
-        // 首帧仅存底
-        let Some(prev_img) = prev.take() else {
-            prev = Some(cur);
+        // 取框选区域；未框选则静默
+        let region = *OCR_REGION.lock().unwrap();
+        let Some((rx, ry, rw, rh)) = region else { continue };
+        if rw < 50 || rh < 20 {
+            continue;
+        }
+        // 只截框选区域
+        let Ok(img) = capture_region_area(rx, ry, rw, rh) else { continue };
+        let now = now_secs();
+        // 帧门控：滚动/移动中不 ready，停稳才 ready
+        let decision = gate.observe(&img, now);
+        if !decision.ready {
+            continue;
+        }
+        // 区域图已裁剪，从 (0,0) 编码；服务端加回屏幕偏移 (rx, ry)
+        let b64 = match region_b64(&img, 0, 0, rw, rh) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let body = serde_json::json!({ "image_b64": b64, "x": rx, "y": ry });
+        let resp = match ureq::post(OCR_API)
+            .timeout(Duration::from_secs(30))
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+        {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let resp_str = match resp.into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let parsed: OcrLinesResp = match serde_json::from_str(&resp_str) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !parsed.ok || parsed.lines.is_empty() || parsed.text.trim().is_empty() {
+            continue;
+        }
+        // 文本稳定器：连续 ≥3 帧同一文本（不再增长）才交付
+        let Some(delivered) = stabilizer.observe(&parsed.text, now) else {
             continue;
         };
-        let regions = diff_regions(&prev_img, &cur);
-        prev = Some(cur.clone());
-        // 只处理“新出现”的文字区域（宽度>100 高度>20 的文字块）
-        for (x, y, w, h) in regions {
-            if w < 100 || h < 20 || w > 1600 || h > 300 {
-                continue;
-            }
-            // 裁剪并 OCR
-            let b64 = match region_b64(&cur, x, y, w, h) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let body = serde_json::json!({ "image_b64": b64, "x": x, "y": y });
-            let resp = match ureq::post(OCR_API)
-                .timeout(Duration::from_secs(30))
-                .set("Content-Type", "application/json")
-                .send_string(&body.to_string())
-            {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let resp_str = match resp.into_string() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let parsed: OcrLinesResp = match serde_json::from_str(&resp_str) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            if !parsed.ok || parsed.lines.is_empty() {
-                continue;
-            }
-            // 去重：跳过已翻译过的文本
-            let key = parsed.text.trim().to_string();
-            if key.is_empty() || last_texts.contains(&key) {
-                continue;
-            }
-            last_texts.push(key.clone());
-            if last_texts.len() > 20 {
-                last_texts.remove(0);
-            }
-            // 翻译结果发到 ocr-overlay 渲染（前端原位覆盖）
-            let lines: Vec<(String, i32, i32, i32, i32)> = parsed
-                .lines
-                .iter()
-                .map(|l| (l.text.clone(), l.x, l.y, l.w, l.h))
-                .collect();
-            // 显示覆盖层（全屏透明置顶）
-            if let Some(w) = app.get_webview_window("ocr-overlay") {
-                let _ = w.show();
-            }
-            let _ = app.emit("ocr-translate-result", serde_json::json!({
-                "lines": lines,
-                "translated": parsed.translated,
-                "text": parsed.text,
-            }));
+        if delivered == last_delivered {
+            continue;
         }
+        last_delivered = delivered.clone();
+        log_ocr(&format!("交付译文: {}", parsed.translated));
+        // 译文发到 ocr-overlay，显示在区域下方悬浮条（不盖原文）
+        let lines: Vec<(String, i32, i32, i32, i32)> = parsed
+            .lines
+            .iter()
+            .map(|l| (l.text.clone(), l.x, l.y, l.w, l.h))
+            .collect();
+        if let Some(w) = app.get_webview_window("ocr-overlay") {
+            let _ = w.show();
+        }
+        let _ = app.emit("ocr-translate-result", serde_json::json!({
+            "lines": lines,
+            "translated": parsed.translated,
+            "text": delivered,
+            "region": { "x": rx, "y": ry, "w": rw, "h": rh },
+        }));
     }
 }
 
@@ -704,12 +951,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
+            // 恢复上次框选的 OCR 翻译区域
+            load_ocr_region();
             // 后台线程：轮询剪贴板，发现新复制文本 → 自动翻译 → 通知 overlay 悬浮窗
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 clipboard_monitor(handle);
             });
-            // 后台线程：自动 OCR 原位翻译（截屏 diff → 云端 OCR → 覆盖）
+            // 后台线程：自动 OCR 区域锁定翻译（帧门控+稳定器 → 云端 OCR → 区域下方显示）
             let handle2 = app.handle().clone();
             std::thread::spawn(move || {
                 ocr_translate_loop(handle2);
@@ -740,6 +989,11 @@ pub fn run() {
             hide_overlay,
             quit_app,
             set_ocr_enabled,
+            set_ocr_region,
+            get_ocr_region,
+            clear_ocr_region,
+            open_region_picker,
+            close_region_picker,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

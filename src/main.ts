@@ -35,11 +35,12 @@ $("#btn-close").addEventListener("click", () => invoke("close_window"));
 // V2.1 沉浸式翻译：由 Rust 后台线程监听剪贴板，自动翻译并显示在系统级悬浮窗(overlay)
 // 本页只保留手动翻译按钮
 
-// ============ V2.3 屏幕自动翻译开关 ============
+// ============ V2.4 屏幕区域自动翻译 ============
 const ocrToggle = $("#ocr-auto-toggle") as HTMLInputElement;
 const OCR_KEY = "sprite_ocr_enabled";
+const regionStatus = $("#ocr-region-status");
 
-// 恢复上次状态
+// 恢复上次开关状态
 try {
   const saved = localStorage.getItem(OCR_KEY);
   if (saved === "1") {
@@ -56,8 +57,42 @@ ocrToggle.addEventListener("change", () => {
   try {
     localStorage.setItem(OCR_KEY, on ? "1" : "0");
   } catch { /* ignore */ }
-  ocrToggle.dispatchEvent(new Event("ocr-toggle-change"));
 });
+
+// 刷新区域状态显示
+async function refreshRegionStatus() {
+  try {
+    const r = await invoke<number[]>("get_ocr_region");
+    if (r && r.length === 4) {
+      regionStatus.textContent = `已框选 (${r[0]}, ${r[1]}) ${r[2]}×${r[3]}`;
+      regionStatus.classList.add("on");
+    } else {
+      regionStatus.textContent = "未框选区域";
+      regionStatus.classList.remove("on");
+    }
+  } catch { /* ignore */ }
+}
+refreshRegionStatus();
+
+// 框选按钮：打开全屏选择器
+$("#btn-pick-region").addEventListener("click", async () => {
+  try {
+    await invoke("open_region_picker");
+  } catch (e) {
+    console.log("open_region_picker 失败:", e);
+  }
+});
+
+// 清除按钮
+$("#btn-clear-region").addEventListener("click", async () => {
+  try {
+    await invoke("clear_ocr_region");
+    await refreshRegionStatus();
+  } catch (e) { console.log("clear_ocr_region 失败:", e); }
+});
+
+// 框选完成后自动刷新（轮询 1 秒）
+setInterval(refreshRegionStatus, 1000);
 
 $("#btn-translate").addEventListener("click", async () => {
   const text = ($("#trans-in") as HTMLTextAreaElement).value.trim();

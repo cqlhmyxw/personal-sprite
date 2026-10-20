@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100vw; height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      font-family: "Microsoft YaHei", sans-serif;
+      cursor: crosshair;
+      user-select: none;
+    }
+    /* 遮罩层：半透明黑，四个方向 */
+    .mask { position: fixed; background: rgba(0,0,0,0.45); z-index: 1; }
+    /* 选框：亮边框 + 尺寸标签 */
+    #sel {
+      position: fixed;
+      border: 2px solid #7c3aed;
+      background: rgba(124, 58, 237, 0.12);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.6), inset 0 0 0 1px rgba(255,255,255,0.4);
+      z-index: 2;
+      display: none;
+    }
+    #sel-label {
+      position: absolute;
+      bottom: -26px;
+      left: 0;
+      background: #7c3aed;
+      color: #fff;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+    /* 提示条 */
+    #hint {
+      position: fixed;
+      top: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20, 16, 48, 0.9);
+      color: #fff;
+      font-size: 14px;
+      padding: 8px 18px;
+      border-radius: 20px;
+      z-index: 3;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      white-space: nowrap;
+    }
+    #hint kbd {
+      background: rgba(255,255,255,0.2);
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="hint">拖拽框选要翻译的区域（如评论区）· <kbd>Esc</kbd> 取消 · 松开完成</div>
+  <div id="sel"><div id="sel-label"></div></div>
+  <script>
+    const api = window.__TAURI__;
+    const selEl = document.getElementById("sel");
+    const labelEl = document.getElementById("sel-label");
+    let startX = 0, startY = 0, dragging = false;
+
+    // 屏幕物理尺寸（选择器全屏）
+    const SW = window.screen.width * (window.devicePixelRatio || 1);
+    const SH = window.screen.height * (window.devicePixelRatio || 1);
+
+    function updateMask() {
+      // 清除旧 mask
+      document.querySelectorAll(".mask").forEach((m) => m.remove());
+      const r = selEl.getBoundingClientRect();
+      const s = selEl.style.display === "none" ? null : r;
+      const mk = (top, left, w, h) => {
+        const d = document.createElement("div");
+        d.className = "mask";
+        d.style.top = top + "px";
+        d.style.left = left + "px";
+        d.style.width = w + "px";
+        d.style.height = h + "px";
+        document.body.appendChild(d);
+      };
+      if (!s) {
+        mk(0, 0, SW, SH);
+        return;
+      }
+      // 上、下、左、右
+      mk(0, 0, SW, s.top);
+      mk(s.bottom, 0, SW, SH - s.bottom);
+      mk(s.top, 0, s.left, s.height);
+      mk(s.top, s.right, SW - s.right, s.height);
+    }
+
+    document.addEventListener("mousedown", (e) => {
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      selEl.style.display = "block";
+      selEl.style.left = startX + "px";
+      selEl.style.top = startY + "px";
+      selEl.style.width = "0px";
+      selEl.style.height = "0px";
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const x = Math.min(e.clientX, startX);
+      const y = Math.min(e.clientY, startY);
+      const w = Math.abs(e.clientX - startX);
+      const hgt = Math.abs(e.clientY - startY);
+      selEl.style.left = x + "px";
+      selEl.style.top = y + "px";
+      selEl.style.width = w + "px";
+      selEl.style.height = hgt + "px";
+      labelEl.textContent = `${w} × ${hgt}`;
+      updateMask();
+    });
+
+    document.addEventListener("mouseup", async (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const x = Math.min(e.clientX, startX);
+      const y = Math.min(e.clientY, startY);
+      const w = Math.abs(e.clientX - startX);
+      const hgt = Math.abs(e.clientY - startY);
+      if (w >= 50 && hgt >= 20) {
+        // 保存区域到 Rust
+        try {
+          await api.core.invoke("set_ocr_region", { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(hgt) });
+        } catch (err) { console.log("set_ocr_region:", err); }
+      }
+      // 通知主窗口刷新状态 + 关闭选择器
+      try {
+        await api.core.invoke("close_region_picker");
+      } catch (err) {
+        // 关闭当前窗口（tauri 无权限时兜底）
+        window.close();
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        try { api.core.invoke("close_region_picker"); } catch (err) { window.close(); }
+      }
+    });
+  </script>
+</body>
+</html>

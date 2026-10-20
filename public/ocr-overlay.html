@@ -5,67 +5,103 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { background: transparent; overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
-    /* 原位译文：绝对定位，显示在原文位置之上 */
+    /* 译文悬浮条：显示在框选区域下方，不盖原文（防止把自己译进去） */
     .ocr-tr {
       position: absolute;
-      background: rgba(20, 16, 48, 0.82);
-      backdrop-filter: blur(6px);
-      -webkit-backdrop-filter: blur(6px);
+      background: rgba(20, 16, 48, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       color: #fff;
-      font-size: 13px;
-      line-height: 1.4;
-      padding: 3px 6px;
-      border-radius: 4px;
-      border-left: 2px solid #7c3aed;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border-left: 3px solid #7c3aed;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
       pointer-events: none;
       white-space: pre-wrap;
       word-break: break-word;
       z-index: 2147483647;
-      animation: fadeIn 0.15s ease;
+      animation: fadeIn 0.2s ease;
+      max-height: 240px;
+      overflow-y: auto;
     }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+    /* 原文行（只读参考，半透明不挡） */
+    .ocr-src {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.45);
+      color: rgba(255, 255, 255, 0.9);
+      font-size: 12px;
+      line-height: 1.4;
+      padding: 2px 5px;
+      border-radius: 3px;
+      pointer-events: none;
+      z-index: 2147483646;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
   </style>
 </head>
 <body>
   <script>
     // Tauri 全局 API
     const api = window.__TAURI__;
-    let hidden = false;
+    let currentRegion = null;
 
     async function setup() {
-      // 让本窗口鼠标穿透（不拦截任何点击/滚动），只做视觉覆盖
+      // 本窗口鼠标穿透（不拦截任何点击/滚动），只做视觉浮层
       try {
         await api.window.getCurrentWindow().setIgnoreCursorEvents(true);
       } catch (e) { console.log("ignore-cursor:", e); }
 
-      // 监听 Rust 后台发来的 OCR 翻译结果 → 原位渲染
+      // 监听 Rust 后台发来的区域翻译结果 → 在区域下方渲染译文
       await api.event.listen("ocr-translate-result", (e) => {
-        const { lines, translated, text } = e.payload;
-        if (!lines || !lines.length) return;
+        const { lines, translated, text, region } = e.payload;
+        if (!translated) return;
         // 清除旧译文
-        document.querySelectorAll(".ocr-tr").forEach((n) => n.remove());
-        // 每个文本行在原位置下方显示译文
-        // 简化：整块译文显示在首行文本位置（多行评论场景译文块贴原文下方）
-        const first = lines[0];
-        // 整块译文（多行合并，分行显示）
-        const tDiv = document.createElement("div");
-        tDiv.className = "ocr-tr";
-        tDiv.textContent = translated;
-        // 位置：首行文字区域的上方（避免挡住原文）
-        const x = first.x - 4;
-        const y = first.y - 8 - 6;
-        tDiv.style.left = x + "px";
-        tDiv.style.top = y + "px";
-        tDiv.style.maxWidth = Math.max(first.w, 260) + "px";
-        document.body.appendChild(tDiv);
-        hidden = false;
+        document.querySelectorAll(".ocr-tr, .ocr-src").forEach((n) => n.remove());
+        currentRegion = region;
+        if (!region) return;
+
+        const r = region; // {x,y,w,h} 屏幕坐标
+        // 译文悬浮条：放在区域正下方（若空间不足则放上方）
+        const tr = document.createElement("div");
+        tr.className = "ocr-tr";
+        tr.textContent = translated;
+        // 区域下方 8px；若超出屏底，改为区域上方
+        const barH = 60;
+        let top = r.y + r.h + 8;
+        if (top + barH > window.screen.height * (window.devicePixelRatio || 1)) {
+          top = Math.max(8, r.y - barH - 8);
+        }
+        let left = r.x;
+        const maxW = Math.min(r.w, 560);
+        left = Math.max(8, Math.min(left, (window.screen.width * (window.devicePixelRatio || 1)) - maxW - 8));
+        tr.style.left = left + "px";
+        tr.style.top = top + "px";
+        tr.style.width = maxW + "px";
+        document.body.appendChild(tr);
+
+        // 原文行（半透明只读参考）
+        if (lines && lines.length) {
+          lines.forEach((l) => {
+            // 服务端 lines 坐标已含屏幕偏移(rx,ry)
+            const s = document.createElement("div");
+            s.className = "ocr-src";
+            s.textContent = l.text;
+            s.style.left = l.x + "px";
+            s.style.top = l.y + "px";
+            s.style.maxWidth = Math.max(40, l.w) + "px";
+            document.body.appendChild(s);
+          });
+        }
       });
 
-      // 也监听隐藏指令
+      // 隐藏指令
       await api.event.listen("ocr-hide", () => {
-        document.querySelectorAll(".ocr-tr").forEach((n) => n.remove());
-        hidden = true;
+        document.querySelectorAll(".ocr-tr, .ocr-src").forEach((n) => n.remove());
       });
     }
 

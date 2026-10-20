@@ -20,7 +20,7 @@
       <div class="brand-logo">🦋</div>
       <div class="brand-title">
         <h1>个人精灵</h1>
-        <span id="ver">v2.3.0</span>
+        <span id="ver">v2.4.0</span>
       </div>
       <div class="brand-actions">
         <button id="btn-min" class="icon-btn" title="最小化">—</button>
@@ -40,13 +40,18 @@
       <div class="card glass">
         <div class="ocr-auto-row">
           <div class="ocr-auto-info">
-            <span class="ocr-auto-title">🖥️ 屏幕自动翻译（实验性）</span>
-            <span class="ocr-auto-desc">自动识别屏幕上新出现的外文（X/微信/视频等），在原位置覆盖显示中文译文</span>
+            <span class="ocr-auto-title">🖥️ 屏幕区域自动翻译</span>
+            <span class="ocr-auto-desc">先框选一块屏幕区域（如评论区/字幕区），滚动时自动翻译，译文显示在区域下方</span>
+            <span id="ocr-region-status" class="ocr-region-status">未框选区域</span>
           </div>
-          <label class="switch">
-            <input type="checkbox" id="ocr-auto-toggle" />
-            <span class="slider"></span>
-          </label>
+          <div class="ocr-auto-actions">
+            <button id="btn-pick-region" class="mini-btn">📐 框选区域</button>
+            <button id="btn-clear-region" class="mini-btn ghost">清除</button>
+            <label class="switch">
+              <input type="checkbox" id="ocr-auto-toggle" />
+              <span class="slider"></span>
+            </label>
+          </div>
         </div>
       </div>
       <div class="card glass">

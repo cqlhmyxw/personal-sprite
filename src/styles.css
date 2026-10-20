@@ -392,3 +392,64 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(167,139
   max-height: 200px;
   overflow-y: auto;
 }
+
+/* ============ V2.3 屏幕自动翻译开关 ============ */
+.ocr-auto-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px;
+}
+.ocr-auto-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ocr-auto-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.ocr-auto-desc {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+  line-height: 1.5;
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: rgba(255,255,255,0.2);
+  border-radius: 24px;
+  transition: 0.25s;
+}
+.slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: 0.25s;
+}
+.switch input:checked + .slider {
+  background: linear-gradient(135deg, #7c3aed, #db2777);
+}
+.switch input:checked + .slider::before {
+  transform: translateX(20px);
+}

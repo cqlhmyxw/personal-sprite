@@ -35,6 +35,30 @@ $("#btn-close").addEventListener("click", () => invoke("close_window"));
 // V2.1 沉浸式翻译：由 Rust 后台线程监听剪贴板，自动翻译并显示在系统级悬浮窗(overlay)
 // 本页只保留手动翻译按钮
 
+// ============ V2.3 屏幕自动翻译开关 ============
+const ocrToggle = $("#ocr-auto-toggle") as HTMLInputElement;
+const OCR_KEY = "sprite_ocr_enabled";
+
+// 恢复上次状态
+try {
+  const saved = localStorage.getItem(OCR_KEY);
+  if (saved === "1") {
+    ocrToggle.checked = true;
+    invoke("set_ocr_enabled", { enabled: true });
+  }
+} catch { /* ignore */ }
+
+ocrToggle.addEventListener("change", () => {
+  const on = ocrToggle.checked;
+  invoke("set_ocr_enabled", { enabled: on }).catch((e) => {
+    console.log("set_ocr_enabled 失败:", e);
+  });
+  try {
+    localStorage.setItem(OCR_KEY, on ? "1" : "0");
+  } catch { /* ignore */ }
+  ocrToggle.dispatchEvent(new Event("ocr-toggle-change"));
+});
+
 $("#btn-translate").addEventListener("click", async () => {
   const text = ($("#trans-in") as HTMLTextAreaElement).value.trim();
   if (!text) { setStatus("#trans-status", "请输入要翻译的文字", "err"); return; }

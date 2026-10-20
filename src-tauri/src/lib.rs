@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -440,6 +441,261 @@ fn find_bin(names: &[&str]) -> Option<String> {
     None
 }
 
+// ============ V2.3 自动 OCR 原位翻译 ============
+// 每 1.8s 整屏截屏 → 与上帧 diff → 找稳定变化文字区 → 云端 OCR+翻译 → overlay 原位覆盖
+const OCR_API: &str = "https://ocr.fast-api-hub.top/ocr-lines-b64";
+static OCR_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn set_ocr_enabled(enabled: bool) {
+    OCR_ENABLED.store(enabled, Ordering::Relaxed);
+    log_ocr(&format!("屏幕自动翻译: {}", if enabled { "开" } else { "关" }));
+}
+
+fn ocr_enabled() -> bool {
+    OCR_ENABLED.load(Ordering::Relaxed)
+}
+
+fn log_ocr(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true).append(true).open("ocr_log.txt")
+    {
+        let _ = writeln!(f, "[{}] {msg}", chrono_local_now());
+    }
+}
+
+fn chrono_local_now() -> String {
+    // 轻量本地时间（无 chrono 依赖：用 std::time）
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("unix:{secs}")
+}
+
+fn capture_screen() -> Result<(i32, i32, image::RgbaImage), String> {
+    #[cfg(target_os = "windows")]
+    {
+        // 整屏截图（PowerShell + System.Drawing，与 screen_capture_region 同法）
+        let ps = "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; \
+                  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; \
+                  $w = $b.Width; $h = $b.Height; \
+                  $bm = New-Object System.Drawing.Bitmap($w,$h); \
+                  $g = [System.Drawing.Graphics]::FromImage($bm); \
+                  $g.CopyFromScreen($b.X,$b.Y,0,0,($w,$h)); \
+                  $ms = New-Object System.IO.MemoryStream; \
+                  $bm.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); \
+                  [Convert]::ToBase64String($ms.ToArray())";
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", ps])
+            .output()
+            .map_err(|e| format!("截屏失败: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let b64 = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let bytes = base64_decode(&b64)?;
+        // 解码 PNG → RgbaImage
+        let img = image::load_from_memory(&bytes)
+            .map_err(|e| format!("PNG解码失败: {e}"))?
+            .to_rgba8();
+        let (w, h) = (img.width() as i32, img.height() as i32);
+        Ok((w, h, img))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("非 Windows 平台".into())
+    }
+}
+
+// 帧间 diff：返回变化区域列表
+fn diff_regions(prev: &image::RgbaImage, cur: &image::RgbaImage) -> Vec<(i32, i32, i32, i32)> {
+    let (w, h) = (cur.width(), cur.height());
+    if prev.width() != w || prev.height() != h {
+        return vec![(0, 0, w as i32, h as i32)];
+    }
+    // 降采样到 1/4 检测变化
+    let (sw, sh) = (w / 4, h / 4);
+    let (swi, shi) = (sw as i32, sh as i32);
+    let mut changed = vec![false; (sw * sh) as usize];
+    for y in 0..sh {
+        for x in 0..sw {
+            let p = prev.get_pixel(x * 4, y * 4);
+            let c = cur.get_pixel(x * 4, y * 4);
+            if p[0] != c[0] || p[1] != c[1] || p[2] != c[2] {
+                let dr = (p[0] as i32 - c[0] as i32).abs();
+                let dg = (p[1] as i32 - c[1] as i32).abs();
+                let db = (p[2] as i32 - c[2] as i32).abs();
+                if dr + dg + db > 45 {
+                    changed[(y * sw + x) as usize] = true;
+                }
+            }
+        }
+    }
+    // 找变化行带
+    let mut row_changes = vec![0i32; sh as usize];
+    for y in 0..sh {
+        for x in 0..sw {
+            if changed[(y * sw + x) as usize] {
+                row_changes[y as usize] += 1;
+            }
+        }
+    }
+    let mut regions: Vec<(i32, i32, i32, i32)> = vec![];
+    let mut band_start: Option<i32> = None;
+    for y in 0..shi {
+        if row_changes[y as usize] > 1 {
+            if band_start.is_none() {
+                band_start = Some(y);
+            }
+        } else if let Some(bs) = band_start {
+            let be = y - 1;
+            if be - bs >= 2 {
+                // 该带内所有变化列的范围
+                let mut min_x = swi; let mut max_x = 0i32;
+                for yy in bs..=be {
+                    for xx in 0..swi {
+                        if changed[(yy * swi + xx) as usize] {
+                            min_x = min_x.min(xx);
+                            max_x = max_x.max(xx);
+                        }
+                    }
+                }
+                if max_x - min_x >= 2 {
+                    regions.push((min_x * 4, bs * 4, (max_x - min_x + 1) * 4, (be - bs + 1) * 4));
+                }
+            }
+            band_start = None;
+        }
+    }
+    if let Some(bs) = band_start {
+        let be = shi - 1;
+        if be - bs >= 2 {
+            let mut min_x = swi; let mut max_x = 0i32;
+            for yy in bs..=be {
+                for xx in 0..swi {
+                    if changed[(yy * swi + xx) as usize] {
+                        min_x = min_x.min(xx);
+                        max_x = max_x.max(xx);
+                    }
+                }
+            }
+            if max_x - min_x >= 2 {
+                regions.push((min_x * 4, bs * 4, (max_x - min_x + 1) * 4, (be - bs + 1) * 4));
+            }
+        }
+    }
+    regions
+}
+
+// 区域 PNG → base64
+fn region_b64(img: &image::RgbaImage, x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+    let crop = image::imageops::crop_imm(img, x as u32, y as u32, w as u32, h as u32).to_image();
+    let mut buf = std::io::Cursor::new(Vec::new());
+    crop.write_to(&mut buf, image::ImageFormat::Png)
+        .map_err(|e| format!("PNG编码失败: {e}"))?;
+    use base64::Engine as _;
+    Ok(base64::engine::general_purpose::STANDARD.encode(buf.get_ref()))
+}
+
+#[derive(Deserialize)]
+struct OcrLinesResp {
+    ok: bool,
+    #[serde(default)]
+    lines: Vec<OcrLine>,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    translated: String,
+}
+#[derive(Deserialize, Clone)]
+struct OcrLine {
+    text: String,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+// 自动 OCR 翻译主循环
+fn ocr_translate_loop(app: AppHandle) {
+    let mut prev: Option<image::RgbaImage> = None;
+    // 区域去重（同一文本不重复翻译）
+    let mut last_texts: Vec<String> = vec![];
+    loop {
+        std::thread::sleep(Duration::from_millis(1800));
+        // 开关关闭时不截屏（省资源）
+        if !ocr_enabled() {
+            prev = None;
+            continue;
+        }
+        let Ok((_w, _h, cur)) = capture_screen() else { continue };
+        // 首帧仅存底
+        let Some(prev_img) = prev.take() else {
+            prev = Some(cur);
+            continue;
+        };
+        let regions = diff_regions(&prev_img, &cur);
+        prev = Some(cur.clone());
+        // 只处理“新出现”的文字区域（宽度>100 高度>20 的文字块）
+        for (x, y, w, h) in regions {
+            if w < 100 || h < 20 || w > 1600 || h > 300 {
+                continue;
+            }
+            // 裁剪并 OCR
+            let b64 = match region_b64(&cur, x, y, w, h) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let body = serde_json::json!({ "image_b64": b64, "x": x, "y": y });
+            let resp = match ureq::post(OCR_API)
+                .timeout(Duration::from_secs(30))
+                .set("Content-Type", "application/json")
+                .send_string(&body.to_string())
+            {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let resp_str = match resp.into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let parsed: OcrLinesResp = match serde_json::from_str(&resp_str) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if !parsed.ok || parsed.lines.is_empty() {
+                continue;
+            }
+            // 去重：跳过已翻译过的文本
+            let key = parsed.text.trim().to_string();
+            if key.is_empty() || last_texts.contains(&key) {
+                continue;
+            }
+            last_texts.push(key.clone());
+            if last_texts.len() > 20 {
+                last_texts.remove(0);
+            }
+            // 翻译结果发到 ocr-overlay 渲染（前端原位覆盖）
+            let lines: Vec<(String, i32, i32, i32, i32)> = parsed
+                .lines
+                .iter()
+                .map(|l| (l.text.clone(), l.x, l.y, l.w, l.h))
+                .collect();
+            // 显示覆盖层（全屏透明置顶）
+            if let Some(w) = app.get_webview_window("ocr-overlay") {
+                let _ = w.show();
+            }
+            let _ = app.emit("ocr-translate-result", serde_json::json!({
+                "lines": lines,
+                "translated": parsed.translated,
+                "text": parsed.text,
+            }));
+        }
+    }
+}
+
 // ============ 入口 ============
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -452,6 +708,11 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 clipboard_monitor(handle);
+            });
+            // 后台线程：自动 OCR 原位翻译（截屏 diff → 云端 OCR → 覆盖）
+            let handle2 = app.handle().clone();
+            std::thread::spawn(move || {
+                ocr_translate_loop(handle2);
             });
             Ok(())
         })
@@ -478,6 +739,7 @@ pub fn run() {
             show_overlay,
             hide_overlay,
             quit_app,
+            set_ocr_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

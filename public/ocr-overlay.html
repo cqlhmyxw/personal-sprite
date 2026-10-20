@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+    /* 原位译文：绝对定位，显示在原文位置之上 */
+    .ocr-tr {
+      position: absolute;
+      background: rgba(20, 16, 48, 0.82);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      color: #fff;
+      font-size: 13px;
+      line-height: 1.4;
+      padding: 3px 6px;
+      border-radius: 4px;
+      border-left: 2px solid #7c3aed;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      pointer-events: none;
+      white-space: pre-wrap;
+      word-break: break-word;
+      z-index: 2147483647;
+      animation: fadeIn 0.15s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+  <script>
+    // Tauri 全局 API
+    const api = window.__TAURI__;
+    let hidden = false;
+
+    async function setup() {
+      // 让本窗口鼠标穿透（不拦截任何点击/滚动），只做视觉覆盖
+      try {
+        await api.window.getCurrentWindow().setIgnoreCursorEvents(true);
+      } catch (e) { console.log("ignore-cursor:", e); }
+
+      // 监听 Rust 后台发来的 OCR 翻译结果 → 原位渲染
+      await api.event.listen("ocr-translate-result", (e) => {
+        const { lines, translated, text } = e.payload;
+        if (!lines || !lines.length) return;
+        // 清除旧译文
+        document.querySelectorAll(".ocr-tr").forEach((n) => n.remove());
+        // 每个文本行在原位置下方显示译文
+        // 简化：整块译文显示在首行文本位置（多行评论场景译文块贴原文下方）
+        const first = lines[0];
+        // 整块译文（多行合并，分行显示）
+        const tDiv = document.createElement("div");
+        tDiv.className = "ocr-tr";
+        tDiv.textContent = translated;
+        // 位置：首行文字区域的上方（避免挡住原文）
+        const x = first.x - 4;
+        const y = first.y - 8 - 6;
+        tDiv.style.left = x + "px";
+        tDiv.style.top = y + "px";
+        tDiv.style.maxWidth = Math.max(first.w, 260) + "px";
+        document.body.appendChild(tDiv);
+        hidden = false;
+      });
+
+      // 也监听隐藏指令
+      await api.event.listen("ocr-hide", () => {
+        document.querySelectorAll(".ocr-tr").forEach((n) => n.remove());
+        hidden = true;
+      });
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", setup);
+    } else {
+      setup();
+    }
+  </script>
+</body>
+</html>

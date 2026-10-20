@@ -23,12 +23,13 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2"
-ureq = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
+ureq = "2"
+image = "0.25"
 arboard = "3"
 base64 = "0.22"
+xcap = "0.9"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

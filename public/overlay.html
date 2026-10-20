@@ -4,80 +4,39 @@
   <meta charset="UTF-8" />
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body {
-      background: transparent;
-      overflow: hidden;
-      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    }
+    html, body { background: transparent; overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
     #card {
-      position: fixed;
-      inset: 0;
-      margin: 8px;
-      background: rgba(18, 14, 38, 0.92);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 18px;
-      box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      animation: pop 0.22s ease;
+      position: fixed; inset: 0; margin: 4px;
+      background: rgba(18, 14, 38, 0.78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      display: flex; flex-direction: column; overflow: hidden;
+      animation: pop 0.18s ease;
     }
-    @keyframes pop {
-      from { transform: scale(0.92); opacity: 0; }
-      to { transform: scale(1); opacity: 1; }
-    }
+    @keyframes pop { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
     #head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 14px;
-      background: linear-gradient(135deg, rgba(124,58,237,0.55), rgba(219,39,119,0.45));
-      cursor: move;
-      user-select: none;
-      -webkit-user-select: none;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 3px 8px;
+      background: linear-gradient(135deg, rgba(124,58,237,0.5), rgba(219,39,119,0.4));
+      cursor: move; user-select: none; -webkit-user-select: none; flex-shrink: 0;
     }
-    #head .t { color: #fff; font-size: 13px; font-weight: 600; }
-    #head .btns { display: flex; gap: 6px; }
+    #head .t { color: #fff; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
+    #head .btns { display: flex; gap: 3px; }
     #head button {
-      background: rgba(255,255,255,0.12);
-      border: none;
-      color: #fff;
-      font-size: 12px;
-      width: 22px; height: 22px;
-      border-radius: 6px;
-      cursor: pointer;
-      line-height: 1;
+      background: rgba(255,255,255,0.12); border: none; color: #fff;
+      font-size: 10px; width: 18px; height: 18px; border-radius: 4px;
+      cursor: pointer; line-height: 1; padding: 0;
     }
-    #head button:hover { background: rgba(255,255,255,0.28); }
+    #head button:hover { background: rgba(255,255,255,0.3); }
     #close:hover { background: rgba(239,68,68,0.7); }
-    #body {
-      padding: 10px 14px 12px;
-      flex: 1;
-      overflow-y: auto;
-      color: #f0eefc;
-      font-size: 14px;
-      line-height: 1.65;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    #body .src {
-      color: rgba(240, 238, 252, 0.62);
-      font-size: 12.5px;
-      margin-bottom: 6px;
-      border-bottom: 1px dashed rgba(255,255,255,0.15);
-      padding-bottom: 6px;
-    }
-    #body .dst { color: #fff; font-size: 15px; }
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
-    #empty {
-      color: rgba(240,238,252,0.45);
-      text-align: center;
-      padding: 24px 0;
-      font-size: 13px;
-    }
+    #body { padding: 5px 9px 7px; flex: 1; overflow-y: auto; color: #f0eefc; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+    #body .src { color: rgba(240, 238, 252, 0.5); font-size: 11px; margin-bottom: 3px; padding-bottom: 3px; border-bottom: 1px dashed rgba(255,255,255,0.12); display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+    #body .dst { color: #fff; font-size: 13px; }
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 3px; }
   </style>
 </head>
 <body>
@@ -91,47 +50,37 @@
       </div>
     </div>
     <div id="body">
-      <div id="empty">复制任意外文 → 自动翻译显示在这里</div>
       <div id="src" class="src" style="display:none"></div>
       <div id="dst" class="dst"></div>
     </div>
   </div>
 
   <script>
-    // ===== 使用全局 Tauri API（withGlobalTauri） =====
     const api = window.__TAURI__;
-    const emptyEl = document.getElementById("empty");
     const srcEl = document.getElementById("src");
     const dstEl = document.getElementById("dst");
-    const cardEl = document.getElementById("card");
     let pinned = true;
 
-    // 监听 Rust 端翻译结果
     api.event.listen("translate-result", (e) => {
       const { text, translated } = e.payload;
-      emptyEl.style.display = "none";
       srcEl.style.display = "block";
-      srcEl.textContent = "📋 " + (text.length > 120 ? text.slice(0, 120) + "…" : text);
+      srcEl.textContent = "📋 " + (text.length > 80 ? text.slice(0, 80) + "…" : text);
       dstEl.textContent = translated;
     });
 
-    // 拖动窗口（通过 Tauri 的 startDragging）
     document.getElementById("head").addEventListener("mousedown", (e) => {
-      if (e.target.id === "close" || e.target.id === "pin") return;
+      if (e.target.id === "close" || e.target.id === "pin" || e.target.id === "quit") return;
       api.window.getCurrentWindow().startDragging();
     });
 
-    // 关闭：隐藏窗口（监听继续，下次复制再出现）
     document.getElementById("close").addEventListener("click", async () => {
       await api.window.getCurrentWindow().hide();
     });
 
-    // 退出整个应用
     document.getElementById("quit").addEventListener("click", async () => {
       await api.core.invoke("quit_app");
     });
 
-    // 置顶开关
     document.getElementById("pin").addEventListener("click", async () => {
       pinned = !pinned;
       await api.window.getCurrentWindow().setAlwaysOnTop(pinned);

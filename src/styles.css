@@ -334,3 +334,61 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(167,139
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.25); }
+
+/* ============ V2.1 沉浸式翻译悬浮窗 ============ */
+.float-window {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 99999;
+  width: 320px;
+  max-height: 260px;
+  background: rgba(20, 16, 40, 0.92);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 16px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+  pointer-events: none;
+  transition: all 0.25s ease;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+.float-window.show {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+.float-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, rgba(124,58,237,0.4), rgba(219,39,119,0.35));
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  cursor: grab;
+  user-select: none;
+}
+.float-close {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.7);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.float-close:hover { background: rgba(255,255,255,0.15); color: #fff; }
+.float-text {
+  padding: 12px 14px;
+  color: #eee;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}

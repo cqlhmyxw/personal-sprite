@@ -81,6 +81,62 @@ fn speak_text(text: String) -> Result<(), String> {
     Ok(())
 }
 
+// ============ V2.1 沉浸式翻译：剪贴板监听 ============
+// 前端每 800ms 轮询剪贴板，检测到复制了新文本就自动翻译
+#[tauri::command]
+fn clipboard_poll(app: AppHandle, last_text: String) -> Result<String, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let current = app.clipboard().read_text().map_err(|e| e.to_string())?;
+    // 剪贴板内容没变 → 返回空（前端不翻译）
+    if current.is_empty() || current == last_text {
+        return Ok(String::new());
+    }
+    Ok(current)
+}
+
+// ============ V2.2 屏幕框选 OCR 翻译 ============
+// 前端框选区域 → 传坐标 → Rust 截屏（后续接 OCR）
+#[tauri::command]
+fn screen_capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<Vec<u8>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: 用 PowerShell + System.Drawing 截屏（无额外依赖）
+        let ps = format!(
+            "Add-Type -AssemblyName System.Drawing; \
+             Add-Type -AssemblyName System.Windows.Forms; \
+             $b = New-Object System.Drawing.Bitmap({w},{h}); \
+             $g = [System.Drawing.Graphics]::FromImage($b); \
+             $g.CopyFromScreen({x},{y},0,0,({w},{h})); \
+             $ms = New-Object System.IO.MemoryStream; \
+             $b.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png); \
+             [Convert]::ToBase64String($ms.ToArray())",
+            x = x, y = y, w = w, h = h
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .map_err(|e| format!("截屏失败: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+        }
+        let b64 = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let bytes = base64_decode(&b64)?;
+        Ok(bytes)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (x, y, w, h);
+        Err("非 Windows 平台暂不支持截屏".into())
+    }
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|e| format!("解码失败: {e}"))
+}
+
 // ============ 笔记数据模型 ============
 #[derive(Serialize, Deserialize, Clone)]
 struct Notebook {
@@ -317,14 +373,17 @@ fn run_pandoc(src: &str, dst: &str) -> Result<(), String> {
 }
 
 fn run_pillow(src: &str, dst: &str) -> Result<(), String> {
-    let py = find_bin(&["python", "python3"]).ok_or("未找到 python")?;
-    let script = format!(
-        "from PIL import Image; im=Image.open(r'{}'); im.save(r'{}')",
-        src.replace("'", "\\'"),
-        dst.replace("'", "\\'")
-    );
-    let out = std::process::Command::new(py).args(["-c", &script]).output().map_err(|e| e.to_string())?;
-    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).into_owned()) }
+    // V2: 改用 Rust 原生 image crate，不再依赖电脑装 Python/PIL
+    let img = image::open(src).map_err(|e| format!("读取图片失败: {e}"))?;
+    let ext = Path::new(dst).extension().and_then(|e| e.to_str()).unwrap_or("png").to_lowercase();
+    match ext.as_str() {
+        "png" => img.save(dst).map_err(|e| format!("保存失败: {e}")),
+        "jpg" | "jpeg" => img.save(dst).map_err(|e| format!("保存失败: {e}")),
+        "webp" => img.save(dst).map_err(|e| format!("保存失败: {e}")),
+        "bmp" => img.save(dst).map_err(|e| format!("保存失败: {e}")),
+        "gif" => img.save(dst).map_err(|e| format!("保存失败: {e}")),
+        _ => Err(format!("不支持的图片目标格式: {ext}")),
+    }
 }
 
 fn run_ffmpeg(src: &str, dst: &str) -> Result<(), String> {
@@ -355,6 +414,8 @@ pub fn run() {
             translate,
             copy_text,
             speak_text,
+            clipboard_poll,
+            screen_capture_region,
             list_notebooks,
             create_notebook,
             list_pages,
